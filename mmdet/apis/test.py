@@ -18,12 +18,22 @@ def single_gpu_test(model,
                     out_dir=None,
                     show_score_thr=0.3):
     model.eval()
-    results = []
+    gallery_det = []
+    gallery_feat = []
+    probe_feat = []
     dataset = data_loader.dataset
     prog_bar = mmcv.ProgressBar(len(dataset))
     for i, data in enumerate(data_loader):
         with torch.no_grad():
-            result = model(return_loss=False, rescale=True, **data)
+            is_gallery = torch.all(data['proposals'][0] == 0)
+            if is_gallery:
+                data.pop("proposals")
+                det, feat = model(return_loss=False, rescale=not show, **data)
+                gallery_det.append(det[0])
+                gallery_feat.append(feat)
+            else:
+                det, feat = model(return_loss=False, rescale=not show, **data)
+                probe_feat.append(feat)
 
         if show or out_dir:
             img_tensor = data['img'][0]
@@ -45,22 +55,22 @@ def single_gpu_test(model,
 
                 model.module.show_result(
                     img_show,
-                    result,
+                    det,
                     show=show,
                     out_file=out_file,
                     score_thr=show_score_thr)
 
         # encode mask results
-        if isinstance(result, tuple):
-            bbox_results, mask_results = result
-            encoded_mask_results = encode_mask_results(mask_results)
-            result = bbox_results, encoded_mask_results
-        results.append(result)
+        # if isinstance(result, tuple):
+        #     bbox_results, mask_results = result
+        #     encoded_mask_results = encode_mask_results(mask_results)
+        #     result = bbox_results, encoded_mask_results
+        # results.append(result)
 
         batch_size = data['img'][0].size(0)
         for _ in range(batch_size):
             prog_bar.update()
-    return results
+    return gallery_det, gallery_feat, probe_feat
 
 
 def multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
@@ -83,7 +93,9 @@ def multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
         list: The prediction results.
     """
     model.eval()
-    results = []
+    gallery_det = []
+    gallery_feat = []
+    probe_feat = []
     dataset = data_loader.dataset
     rank, world_size = get_dist_info()
     if rank == 0:
@@ -91,13 +103,22 @@ def multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
     time.sleep(2)  # This line can prevent deadlock problem in some cases.
     for i, data in enumerate(data_loader):
         with torch.no_grad():
-            result = model(return_loss=False, rescale=True, **data)
+            is_gallery = torch.all(data['proposals'][0] == 0)
+            if is_gallery:
+                data.pop("proposals")
+                det, feat = model(return_loss=False, rescale=True, **data)
+                gallery_det.append(det[0])
+                gallery_feat.append(feat)
+            else:
+                det, feat = model(return_loss=False, rescale=True, **data)
+                probe_feat.append(feat)
+
             # encode mask results
-            if isinstance(result, tuple):
-                bbox_results, mask_results = result
-                encoded_mask_results = encode_mask_results(mask_results)
-                result = bbox_results, encoded_mask_results
-        results.append(result)
+            # if isinstance(result, tuple):
+            #     bbox_results, mask_results = result
+            #     encoded_mask_results = encode_mask_results(mask_results)
+            #     result = bbox_results, encoded_mask_results
+        # results.append(result)
 
         if rank == 0:
             batch_size = (
@@ -108,10 +129,14 @@ def multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
 
     # collect results from all ranks
     if gpu_collect:
-        results = collect_results_gpu(results, len(dataset))
+        gallery_det = collect_results_gpu(gallery_det, len(dataset))
+        gallery_feat = collect_results_gpu(gallery_feat, len(dataset))
+        probe_feat = collect_results_gpu(probe_feat, len(dataset))
     else:
-        results = collect_results_cpu(results, len(dataset), tmpdir)
-    return results
+        gallery_det = collect_results_cpu(gallery_det, len(dataset))
+        gallery_feat = collect_results_cpu(gallery_feat, len(dataset))
+        probe_feat = collect_results_cpu(probe_feat, len(dataset))
+    return gallery_det, gallery_feat, probe_feat
 
 
 def collect_results_cpu(result_part, size, tmpdir=None):

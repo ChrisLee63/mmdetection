@@ -54,21 +54,25 @@ class BBoxTestMixin(object):
                            img_metas,
                            proposals,
                            rcnn_test_cfg,
-                           rescale=False):
+                           rescale=False,
+                           use_rpn=True):
         """Test only det bboxes without augmentation."""
         rois = bbox2roi(proposals)
         bbox_results = self._bbox_forward(x, rois)
+        if not use_rpn:
+            return None, None, bbox_results['feature']
         img_shape = img_metas[0]['img_shape']
         scale_factor = img_metas[0]['scale_factor']
-        det_bboxes, det_labels = self.bbox_head.get_bboxes(
+        det_bboxes, det_labels, det_features = self.bbox_head.get_bboxes(
             rois,
             bbox_results['cls_score'],
             bbox_results['bbox_pred'],
+            bbox_results['feature'],
             img_shape,
             scale_factor,
             rescale=rescale,
             cfg=rcnn_test_cfg)
-        return det_bboxes, det_labels
+        return det_bboxes, det_labels, det_features
 
     def aug_test_bboxes(self, feats, img_metas, proposal_list, rcnn_test_cfg):
         aug_bboxes = []

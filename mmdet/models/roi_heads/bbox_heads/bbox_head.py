@@ -6,7 +6,7 @@ from torch.nn.modules.utils import _pair
 from mmdet.core import (auto_fp16, build_bbox_coder, force_fp32, multi_apply,
                         multiclass_nms)
 from mmdet.models.builder import HEADS, build_loss
-from mmdet.models.losses import accuracy
+from mmdet.models.losses import accuracy, OIMLoss
 
 
 @HEADS.register_module()
@@ -62,6 +62,8 @@ class BBoxHead(nn.Module):
             out_dim_reg = 4 if reg_class_agnostic else 4 * num_classes
             self.fc_reg = nn.Linear(in_channels, out_dim_reg)
         self.debug_imgs = None
+        self.fc_feat = nn.Linear(in_channels, 256)
+        self.loss_oim = OIMLoss()
 
     def init_weights(self):
         # conv layers are already initialized by ConvModule
@@ -79,14 +81,17 @@ class BBoxHead(nn.Module):
         x = x.view(x.size(0), -1)
         cls_score = self.fc_cls(x) if self.with_cls else None
         bbox_pred = self.fc_reg(x) if self.with_reg else None
-        return cls_score, bbox_pred
+        feature = F.normalize(self.fc_feat(x))
+        return cls_score, bbox_pred, feature
 
     def _get_target_single(self, pos_bboxes, neg_bboxes, pos_gt_bboxes,
-                           pos_gt_labels, cfg):
+                           pos_gt_labels, pos_gt_pids, cfg):
         num_pos = pos_bboxes.size(0)
         num_neg = neg_bboxes.size(0)
         num_samples = num_pos + num_neg
 
+        bg_pid = -2  # person ID of background proposal
+        pids = pos_bboxes.new_full((num_samples,), bg_pid, dtype=torch.long)
         # original implementation uses new_zeros since BG are set to be 0
         # now use empty & fill because BG cat_id = num_classes,
         # FG cat_id = [0, num_classes-1]
@@ -97,6 +102,7 @@ class BBoxHead(nn.Module):
         bbox_targets = pos_bboxes.new_zeros(num_samples, 4)
         bbox_weights = pos_bboxes.new_zeros(num_samples, 4)
         if num_pos > 0:
+            pids[:num_pos] = pos_gt_pids
             labels[:num_pos] = pos_gt_labels
             pos_weight = 1.0 if cfg.pos_weight <= 0 else cfg.pos_weight
             label_weights[:num_pos] = pos_weight
@@ -110,38 +116,46 @@ class BBoxHead(nn.Module):
         if num_neg > 0:
             label_weights[-num_neg:] = 1.0
 
-        return labels, label_weights, bbox_targets, bbox_weights
+        return pids, labels, label_weights, bbox_targets, bbox_weights
 
     def get_targets(self,
                     sampling_results,
                     gt_bboxes,
                     gt_labels,
+                    gt_pids,
                     rcnn_train_cfg,
                     concat=True):
         pos_bboxes_list = [res.pos_bboxes for res in sampling_results]
         neg_bboxes_list = [res.neg_bboxes for res in sampling_results]
         pos_gt_bboxes_list = [res.pos_gt_bboxes for res in sampling_results]
         pos_gt_labels_list = [res.pos_gt_labels for res in sampling_results]
-        labels, label_weights, bbox_targets, bbox_weights = multi_apply(
+        pos_gt_pids_list = []
+        for pids, res in zip(gt_pids, sampling_results):
+            pos_gt_pids_list.append(pids[res.pos_assigned_gt_inds])
+        pids, labels, label_weights, bbox_targets, bbox_weights = multi_apply(
             self._get_target_single,
             pos_bboxes_list,
             neg_bboxes_list,
             pos_gt_bboxes_list,
             pos_gt_labels_list,
+            pos_gt_pids_list,
             cfg=rcnn_train_cfg)
 
         if concat:
+            pids = torch.cat(pids, 0)
             labels = torch.cat(labels, 0)
             label_weights = torch.cat(label_weights, 0)
             bbox_targets = torch.cat(bbox_targets, 0)
             bbox_weights = torch.cat(bbox_weights, 0)
-        return labels, label_weights, bbox_targets, bbox_weights
+        return pids, labels, label_weights, bbox_targets, bbox_weights
 
     @force_fp32(apply_to=('cls_score', 'bbox_pred'))
     def loss(self,
              cls_score,
              bbox_pred,
+             feature,
              rois,
+             pids,
              labels,
              label_weights,
              bbox_targets,
@@ -182,6 +196,7 @@ class BBoxHead(nn.Module):
                     reduction_override=reduction_override)
             else:
                 losses['loss_bbox'] = bbox_pred.sum() * 0
+        losses["loss_oim"] = self.loss_oim(feature, pids)
         return losses
 
     @force_fp32(apply_to=('cls_score', 'bbox_pred'))
@@ -189,6 +204,7 @@ class BBoxHead(nn.Module):
                    rois,
                    cls_score,
                    bbox_pred,
+                   feature,
                    img_shape,
                    scale_factor,
                    rescale=False,
@@ -217,11 +233,11 @@ class BBoxHead(nn.Module):
         if cfg is None:
             return bboxes, scores
         else:
-            det_bboxes, det_labels = multiclass_nms(bboxes, scores,
-                                                    cfg.score_thr, cfg.nms,
-                                                    cfg.max_per_img)
+            det_bboxes, det_labels, det_features = multiclass_nms(bboxes, scores, feature,
+                                                                  cfg.score_thr, cfg.nms,
+                                                                  cfg.max_per_img)
 
-            return det_bboxes, det_labels
+            return det_bboxes, det_labels, det_features
 
     @force_fp32(apply_to=('bbox_preds', ))
     def refine_bboxes(self, rois, labels, bbox_preds, pos_is_gts, img_metas):

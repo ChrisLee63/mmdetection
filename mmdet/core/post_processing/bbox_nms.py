@@ -5,6 +5,7 @@ from mmdet.ops.nms import batched_nms
 
 def multiclass_nms(multi_bboxes,
                    multi_scores,
+                   feature,
                    score_thr,
                    nms_cfg,
                    max_num=-1,
@@ -42,11 +43,14 @@ def multiclass_nms(multi_bboxes,
         scores = scores * score_factors[:, None]
     scores = scores[valid_mask]
     labels = valid_mask.nonzero()[:, 1]
+    feature = feature[valid_mask.squeeze()]
 
     if bboxes.numel() == 0:
         bboxes = multi_bboxes.new_zeros((0, 5))
         labels = multi_bboxes.new_zeros((0, ), dtype=torch.long)
-        return bboxes, labels
+        features = multi_bboxes.new_zeros((0, 256))
+        print("Warning: no detections!!!")
+        return bboxes, labels, features
 
     dets, keep = batched_nms(bboxes, scores, labels, nms_cfg)
 
@@ -54,4 +58,4 @@ def multiclass_nms(multi_bboxes,
         dets = dets[:max_num]
         keep = keep[:max_num]
 
-    return dets, labels[keep]
+    return dets, labels[keep], feature[keep]

@@ -222,3 +222,13 @@ class WrapFieldsToLists(object):
 
     def __repr__(self):
         return f'{self.__class__.__name__}()'
+
+
+@PIPELINES.register_module
+class LoadPersonID(object):
+    def __call__(self, results):
+        results["gt_pids"] = DC(to_tensor(results["ann_info"]["person_ids"]))
+        return results
+
+    def __repr__(self):
+        return self.__class__.__name__

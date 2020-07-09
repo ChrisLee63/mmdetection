@@ -89,7 +89,7 @@ def main():
 
     if args.autoscale_lr:
         # apply the linear scaling rule (https://arxiv.org/abs/1706.02677)
-        cfg.optimizer['lr'] = cfg.optimizer['lr'] * len(cfg.gpu_ids) / 8
+        cfg.optimizer['lr'] = cfg.optimizer['lr'] * len(cfg.gpu_ids)
 
     # init distributed env first, since logger depends on the dist info.
     if args.launcher == 'none':

@@ -101,6 +101,7 @@ class TwoStageDetector(BaseDetector, RPNTestMixin):
                       img_metas,
                       gt_bboxes,
                       gt_labels,
+                      gt_pids,
                       gt_bboxes_ignore=None,
                       gt_masks=None,
                       proposals=None,
@@ -153,7 +154,7 @@ class TwoStageDetector(BaseDetector, RPNTestMixin):
             proposal_list = proposals
 
         roi_losses = self.roi_head.forward_train(x, img_metas, proposal_list,
-                                                 gt_bboxes, gt_labels,
+                                                 gt_bboxes, gt_labels, gt_pids,
                                                  gt_bboxes_ignore, gt_masks,
                                                  **kwargs)
         losses.update(roi_losses)
@@ -189,7 +190,7 @@ class TwoStageDetector(BaseDetector, RPNTestMixin):
             proposal_list = proposals
 
         return self.roi_head.simple_test(
-            x, proposal_list, img_metas, rescale=rescale)
+            x, proposal_list, img_metas, rescale=rescale, use_rpn=(proposals is None))
 
     def aug_test(self, imgs, img_metas, rescale=False):
         """Test with augmentations.
