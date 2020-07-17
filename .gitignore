@@ -110,6 +110,7 @@ data/
 .DS_Store
 
 # custom
+*.jpg
 *.pkl
 *.pkl.json
 *.log.json
